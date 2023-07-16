@@ -1,6 +1,6 @@
 MODEL:
   PRETRAIN_CHOICE: 'imagenet'
-  PRETRAIN_PATH: 'G:/shuoshi/REID/TransReID-main/saved/pretrained/jx_vit_base_p16_224-80ecf9dd.pth'
+  PRETRAIN_PATH: 'G:/shuoshi/REID/MyReID/saved/pretrained/jx_vit_base_p16_224-80ecf9dd.pth'
   # METRIC_LOSS_TYPE: 'triplet'
   METRIC_LOSS_TYPE: 'adasp'#2023.7.5
   IF_LABELSMOOTH: 'off'
@@ -22,7 +22,7 @@ INPUT:
 
 DATASETS:
   NAMES: ('market1501')
-  ROOT_DIR: ('G:\\shuoshi\\REID\\TransReID-main\\data')
+  ROOT_DIR: ('G:\\shuoshi\\REID\\MyReID\\data')
 
 DATALOADER:
   # SAMPLER: 'softmax_triplet'
@@ -52,6 +52,6 @@ TEST:
   NECK_FEAT: 'before'
   FEAT_NORM: 'yes'
 
-OUTPUT_DIR: 'G:\\shuoshi\\REID\\TransReID-main\\saved'
+OUTPUT_DIR: 'G:\\shuoshi\\REID\\MyReID\\saved'
 
 
