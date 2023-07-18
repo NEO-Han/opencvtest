@@ -59,7 +59,7 @@ def do_train(cfg,
                 # if torch.numel(img)==1:
                 #     continue
                 score, feat = model(img, target, cam_label=target_cam, view_label=target_view )
-            
+                
                 if cfg.MODEL.METRIC_LOSS_TYPE in ('adasp'):
                     loss_dict=loss_fn(score, feat, target, target_cam)
                     loss=sum(loss_dict.values())

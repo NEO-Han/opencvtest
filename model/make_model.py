@@ -5,6 +5,7 @@ import copy
 from .backbones.vit_pytorch import vit_base_patch16_224_TransReID, vit_small_patch16_224_TransReID, deit_small_patch16_224_TransReID
 from loss.metric_learning import Arcface, Cosface, AMSoftmax, CircleLoss
 from loss.adasp_loss import AdaSPLoss
+from loss.cross_entropy_loss import cross_entropy_loss
 def shuffle_unit(features, shift, group, begin=1):
 
     batchsize = features.size(0)
@@ -255,6 +256,9 @@ class build_transformer_local(nn.Module):
         self.ID_LOSS_TYPE = cfg.MODEL.ID_LOSS_TYPE
         self.ada=cfg.MODEL.METRIC_LOSS_TYPE
         self.tmp=cfg.MODEL.ADA_LOSS_WEIGHT
+        self.eps=cfg.MODEL.LOSSES_CE_EPSILON
+        self.alpha=cfg.MODEL.LOSSES_CE_ALPHA 
+        self.scale=cfg.MODEL.LOSSES_CE_SCALE
         self.pixel_mean=cfg.INPUT.PIXEL_MEAN
         self.pixel_std=cfg.INPUT.PIXEL_STD
         if self.ID_LOSS_TYPE == 'arcface':
@@ -363,12 +367,12 @@ class build_transformer_local(nn.Module):
                 cls_score_2 = self.classifier_2(local_feat_2_bn)
                 cls_score_3 = self.classifier_3(local_feat_3_bn)
                 cls_score_4 = self.classifier_4(local_feat_4_bn)
-                losses=self.losses(
+                losses_dict,losses_ada=self.losses(cls_score, cls_score_1,cls_score_2,cls_score_3,cls_score_4,
                     global_feat,
                     local_feat_1,local_feat_2,local_feat_3,local_feat_4,
                     label   
                 )
-                return torch.cat([cls_score, cls_score_1, cls_score_2, cls_score_3,cls_score_4],dim=1),losses
+                return sum(losses_dict.values()),losses_ada
             else:
                 if self.ID_LOSS_TYPE in ('arcface', 'cosface', 'amsoftmax', 'circle'):
                     cls_score = self.classifier(feat, label)
@@ -415,7 +419,7 @@ class build_transformer_local(nn.Module):
 
         images.sub_(self.pixel_mean).div_(self.pixel_std)
         return images
-    def losses(self,
+    def losses(self,cls_score, cls_score_1,cls_score_2,cls_score_3,cls_score_4,
                     global_feat,
                     local_feat_1,local_feat_2,local_feat_3,local_feat_4,
                     label):
@@ -429,13 +433,19 @@ class build_transformer_local(nn.Module):
             local_feat4 (_type_): _description_
         """
         loss_func=AdaSPLoss(is_train=True)
+        loss_dict={}
+        loss_dict['loss_cls']=cross_entropy_loss(cls_score,label,self.eps,self.alpha)*self.scale*0.125
+        loss_dict['loss_cls1']=cross_entropy_loss(cls_score_1,label,self.eps,self.alpha)*self.scale*0.125
+        loss_dict['loss_cls2']=cross_entropy_loss(cls_score_2,label,self.eps,self.alpha)*self.scale*0.125
+        loss_dict['loss_cls3']=cross_entropy_loss(cls_score_3,label,self.eps,self.alpha)*self.scale*0.125
+        loss_dict['loss_cls4']=cross_entropy_loss(cls_score_4,label,self.eps,self.alpha)*self.scale*0.125
         feat=torch.cat((global_feat,local_feat_1,local_feat_2,local_feat_3,local_feat_4),dim=1)
+        loss_ada=loss_func(feat,label)*self.tmp*0.2
         
-        feat_ada=loss_func(feat,label)*self.tmp*0.2
 
         # print(feat_ada.shape)
 
-        return feat_ada
+        return loss_dict,loss_ada
 
 __factory_T_type = {
     'vit_base_patch16_224_TransReID': vit_base_patch16_224_TransReID,

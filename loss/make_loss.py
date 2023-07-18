@@ -85,11 +85,9 @@ def make_loss(cfg, num_classes):    # modified by gu
                 loss_dict={}
                 if cfg.MODEL.IF_LABELSMOOTH == 'on':
                     if isinstance(score, list):
-                        ID_LOSS = [xent(scor, target) for scor in score[1:]]
-                        ID_LOSS = sum(ID_LOSS) / len(ID_LOSS)
-                        ID_LOSS = 0.5 * ID_LOSS + 0.5 * xent(score[0], target)
+                        ID_LOSS =[scr for scr in score[1:]]
                     else:
-                        ID_LOSS = xent(score, target)
+                        ID_LOSS = score
 
                     if isinstance(feat, list):
                         ADA_LOSS=[fea for fea in feat[1:]]
@@ -100,11 +98,9 @@ def make_loss(cfg, num_classes):    # modified by gu
                     return loss_dict
                 else:
                     if isinstance(score, list):
-                        ID_LOSS = [F.cross_entropy(scor, target) for scor in score[1:]]
-                        ID_LOSS = sum(ID_LOSS) / len(ID_LOSS)
-                        ID_LOSS = 0.5 * ID_LOSS + 0.5 * F.cross_entropy(score[0], target)
+                        ID_LOSS =[scr for scr in score[1:]]
                     else:
-                        ID_LOSS = F.cross_entropy(score, target)
+                        ID_LOSS = score
 
                     if isinstance(feat, list):
                         ADA_LOSS=[fea for fea in feat[1:]]

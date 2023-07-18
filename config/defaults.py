@@ -51,6 +51,10 @@ _C.MODEL.NO_MARGIN = False
 _C.MODEL.IF_LABELSMOOTH = 'on'
 # If train with arcface loss, options: 'True', 'False'
 _C.MODEL.COS_LAYER = False
+_C.MODEL.LOSSES_CE_EPSILON = 0.0
+_C.MODEL.LOSSES_CE_ALPHA = 0.2
+_C.MODEL.LOSSES_CE_SCALE = 1.0
+
 
 # Transformer setting
 _C.MODEL.DROP_PATH = 0.1
