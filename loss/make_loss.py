@@ -82,33 +82,35 @@ def make_loss(cfg, num_classes):    # modified by gu
     elif cfg.DATALOADER.SAMPLER == 'adasp_loss':
         def loss_func(score, feat, target, target_cam):
             if cfg.MODEL.METRIC_LOSS_TYPE == 'adasp':
-                loss_dict={}
+            
                 if cfg.MODEL.IF_LABELSMOOTH == 'on':
                     if isinstance(score, list):
-                        ID_LOSS =[scr for scr in score[1:]]
+                        ID_LOSS = [F.cross_entropy(scor, target) for scor in score[1:]]
+                        ID_LOSS = sum(ID_LOSS) / len(ID_LOSS)
+                        ID_LOSS = 0.5 * ID_LOSS + 0.5 * F.cross_entropy(score[0], target)
                     else:
-                        ID_LOSS = score
-
+                        ID_LOSS = F.cross_entropy(score, target)
                     if isinstance(feat, list):
                         ADA_LOSS=[fea for fea in feat[1:]]
                     else:
                         ADA_LOSS=feat
-                    loss_dict['id_loss']=cfg.MODEL.ID_LOSS_WEIGHT*ID_LOSS
-                    loss_dict['ada_loss']=cfg.MODEL.ADA_LOSS_WEIGHT * ADA_LOSS
-                    return loss_dict
+                    
+                    return cfg.MODEL.ID_LOSS_WEIGHT*ID_LOSS+ \
+                    cfg.MODEL.ADA_LOSS_WEIGHT * ADA_LOSS
                 else:
                     if isinstance(score, list):
-                        ID_LOSS =[scr for scr in score[1:]]
+                        ID_LOSS = [F.cross_entropy(scor, target) for scor in score[1:]]
+                        ID_LOSS = sum(ID_LOSS) / len(ID_LOSS)
+                        ID_LOSS = 0.5 * ID_LOSS + 0.5 * F.cross_entropy(score[0], target)
                     else:
-                        ID_LOSS = score
+                        ID_LOSS = F.cross_entropy(score, target)
 
                     if isinstance(feat, list):
                         ADA_LOSS=[fea for fea in feat[1:]]
                     else:
                         ADA_LOSS=feat
-                    loss_dict['id_loss']=cfg.MODEL.ID_LOSS_WEIGHT*ID_LOSS
-                    loss_dict['ada_loss']=cfg.MODEL.ADA_LOSS_WEIGHT * ADA_LOSS
-                    return loss_dict
+                    return cfg.MODEL.ID_LOSS_WEIGHT*ID_LOSS+ \
+                    cfg.MODEL.ADA_LOSS_WEIGHT * ADA_LOSS
             else:
                 print('expected METRIC_LOSS_TYPE should be triplet'
                       'but got {}'.format(cfg.MODEL.METRIC_LOSS_TYPE))

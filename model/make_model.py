@@ -358,34 +358,27 @@ class build_transformer_local(nn.Module):
         local_feat_4_bn = self.bottleneck_4(local_feat_4)
 
         if self.training:
-            if self.ada in ('adasp'):
-                if self.ID_LOSS_TYPE in ('arcface', 'cosface', 'amsoftmax', 'circle'):
-                    cls_score = self.classifier(feat, label)
-                else:
-                    cls_score = self.classifier(feat)
-                cls_score_1 = self.classifier_1(local_feat_1_bn)
-                cls_score_2 = self.classifier_2(local_feat_2_bn)
-                cls_score_3 = self.classifier_3(local_feat_3_bn)
-                cls_score_4 = self.classifier_4(local_feat_4_bn)
-                losses_dict,losses_ada=self.losses(cls_score, cls_score_1,cls_score_2,cls_score_3,cls_score_4,
-                    global_feat,
-                    local_feat_1,local_feat_2,local_feat_3,local_feat_4,
-                    label   
-                )
-                return sum(losses_dict.values()),losses_ada
-            else:
-                if self.ID_LOSS_TYPE in ('arcface', 'cosface', 'amsoftmax', 'circle'):
-                    cls_score = self.classifier(feat, label)
-                else:
-                    cls_score = self.classifier(feat)
-                cls_score_1 = self.classifier_1(local_feat_1_bn)
-                cls_score_2 = self.classifier_2(local_feat_2_bn)
-                cls_score_3 = self.classifier_3(local_feat_3_bn)
-                cls_score_4 = self.classifier_4(local_feat_4_bn)
-                return torch.cat([cls_score, cls_score_1, cls_score_2, cls_score_3,
-                        cls_score_4],dim=1), torch.cat([global_feat, local_feat_1, local_feat_2, local_feat_3,
-                            local_feat_4],dim=1)  # global feature for triplet loss
             
+            if self.ID_LOSS_TYPE in ('arcface', 'cosface', 'amsoftmax', 'circle'):
+                cls_score = self.classifier(feat, label)
+            else:
+                cls_score = self.classifier(feat)
+            cls_score_1 = self.classifier_1(local_feat_1_bn)
+            cls_score_2 = self.classifier_2(local_feat_2_bn)
+            cls_score_3 = self.classifier_3(local_feat_3_bn)
+            cls_score_4 = self.classifier_4(local_feat_4_bn)
+            
+            # cls_score=cross_entropy_loss(feat,label,self.eps,self.alpha)*self.scale*0.125
+            # cls_score_1 = cross_entropy_loss(local_feat_1_bn,label,self.eps,self.alpha)*self.scale*0.125
+            # cls_score_2 = cross_entropy_loss(local_feat_2_bn,label,self.eps,self.alpha)*self.scale*0.125
+            # cls_score_3 = cross_entropy_loss(local_feat_3_bn,label,self.eps,self.alpha)*self.scale*0.125
+            # cls_score_4 = cross_entropy_loss(local_feat_4_bn,label,self.eps,self.alpha)*self.scale*0.125
+            
+            loss_ada=self.losses(global_feat,local_feat_1,local_feat_2,local_feat_3,local_feat_4,label)
+            
+            return torch.cat([cls_score, cls_score_1, cls_score_2, cls_score_3,
+                        cls_score_4],dim=1), loss_ada  # global feature for triplet loss
+           
         else:
             if self.neck_feat == 'after':
                 return torch.cat(
@@ -419,7 +412,7 @@ class build_transformer_local(nn.Module):
 
         images.sub_(self.pixel_mean).div_(self.pixel_std)
         return images
-    def losses(self,cls_score, cls_score_1,cls_score_2,cls_score_3,cls_score_4,
+    def losses(self,
                     global_feat,
                     local_feat_1,local_feat_2,local_feat_3,local_feat_4,
                     label):
@@ -433,19 +426,12 @@ class build_transformer_local(nn.Module):
             local_feat4 (_type_): _description_
         """
         loss_func=AdaSPLoss(is_train=True)
-        loss_dict={}
-        loss_dict['loss_cls']=cross_entropy_loss(cls_score,label,self.eps,self.alpha)*self.scale*0.125
-        loss_dict['loss_cls1']=cross_entropy_loss(cls_score_1,label,self.eps,self.alpha)*self.scale*0.125
-        loss_dict['loss_cls2']=cross_entropy_loss(cls_score_2,label,self.eps,self.alpha)*self.scale*0.125
-        loss_dict['loss_cls3']=cross_entropy_loss(cls_score_3,label,self.eps,self.alpha)*self.scale*0.125
-        loss_dict['loss_cls4']=cross_entropy_loss(cls_score_4,label,self.eps,self.alpha)*self.scale*0.125
         feat=torch.cat((global_feat,local_feat_1,local_feat_2,local_feat_3,local_feat_4),dim=1)
         loss_ada=loss_func(feat,label)*self.tmp*0.2
-        
-
+    
         # print(feat_ada.shape)
 
-        return loss_dict,loss_ada
+        return loss_ada
 
 __factory_T_type = {
     'vit_base_patch16_224_TransReID': vit_base_patch16_224_TransReID,

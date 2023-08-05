@@ -61,8 +61,8 @@ def do_train(cfg,
                 score, feat = model(img, target, cam_label=target_cam, view_label=target_view )
                 
                 if cfg.MODEL.METRIC_LOSS_TYPE in ('adasp'):
-                    loss_dict=loss_fn(score, feat, target, target_cam)
-                    loss=sum(loss_dict.values())
+                    loss=loss_fn(score, feat, target, target_cam)
+                    # loss=sum(loss_dict.values())
                     # losses.backward()
                 else:
                     loss = loss_fn(score, feat, target, target_cam)
