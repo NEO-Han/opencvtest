@@ -5,24 +5,33 @@ import copy
 from .backbones.vit_pytorch import vit_base_patch16_224_TransReID, vit_small_patch16_224_TransReID, deit_small_patch16_224_TransReID
 from loss.metric_learning import Arcface, Cosface, AMSoftmax, CircleLoss
 from loss.adasp_loss import AdaSPLoss
-from loss.cross_entropy_loss import cross_entropy_loss
-def shuffle_unit(features, shift, group, begin=1):
+from .backbones.crossvit import crossvit_base_224_TransReID
+
+
+def shuffle_unit(features, shift, group, begin=1):#(shift=5,group=4)
 
     batchsize = features.size(0)
+    # print(features.size())
     dim = features.size(-1)
     # Shift Operation
     feature_random = torch.cat([features[:, begin-1+shift:], features[:, begin:begin-1+shift]], dim=1)
     x = feature_random
+    # print(x.shape)
     # Patch Shuffle Operation
-    try:
+    # try:
+    #     x = x.view(batchsize, group, -1, dim)
+    # except:
+    #     x = torch.cat([x, x[:, -2:-1, :]], dim=1)
+    #     x = x.view(batchsize, group, -1, dim)
+    if x.size(1)%2==0:
         x = x.view(batchsize, group, -1, dim)
-    except:
+    else:
         x = torch.cat([x, x[:, -2:-1, :]], dim=1)
-        x = x.view(batchsize, group, -1, dim)
-
+        x = x.view(batchsize, group, -1, dim) 
+    # print(x.shape)
     x = torch.transpose(x, 1, 2).contiguous()
     x = x.view(batchsize, -1, dim)
-
+    # print(x.shape)
     return x
 
 def weights_init_kaiming(m):
@@ -222,16 +231,19 @@ class build_transformer_local(nn.Module):
         self.neck = cfg.MODEL.NECK
         self.neck_feat = cfg.TEST.NECK_FEAT
         self.in_planes = 768
-
+        embed_dim=[384,768]
+        self.cross_divide_length=cfg.MODEL.CROSS_LENGTH
         print('using Transformer_type: {} as a backbone'.format(cfg.MODEL.TRANSFORMER_TYPE))
 
         if cfg.MODEL.SIE_CAMERA:
             camera_num = camera_num
+            # print(camera_num)
         else:
             camera_num = 0
 
         if cfg.MODEL.SIE_VIEW:
             view_num = view_num
+            # print(view_num)
         else:
             view_num = 0
 
@@ -242,25 +254,33 @@ class build_transformer_local(nn.Module):
             print('Loading pretrained ImageNet model......from {}'.format(model_path))
 
         block = self.base.blocks[-1]
-        layer_norm = self.base.norm
-        self.b1 = nn.Sequential(
-            copy.deepcopy(block),
-            copy.deepcopy(layer_norm)
-        )
-        self.b2 = nn.Sequential(
-            copy.deepcopy(block),
-            copy.deepcopy(layer_norm)
-        )
+        # print(block)
+        # layer_norm = self.base.norm
+        # self.b1 = nn.Sequential(
+        #     copy.deepcopy(block),
+        #     copy.deepcopy(layer_norm)
+        # )
+        # self.b2 = nn.Sequential(
+        #     copy.deepcopy(block),
+        #     copy.deepcopy(layer_norm)
+        # )
+        self.b1 = copy.deepcopy(block)
+  
+        self.b2 = copy.deepcopy(block)
+         
 
         self.num_classes = num_classes
         self.ID_LOSS_TYPE = cfg.MODEL.ID_LOSS_TYPE
-        self.ada=cfg.MODEL.METRIC_LOSS_TYPE
-        self.tmp=cfg.MODEL.ADA_LOSS_WEIGHT
+        # self.ada=cfg.MODEL.METRIC_LOSS_TYPE
+        # self.tmp=cfg.MODEL.ADA_LOSS_WEIGHT
         self.eps=cfg.MODEL.LOSSES_CE_EPSILON
         self.alpha=cfg.MODEL.LOSSES_CE_ALPHA 
         self.scale=cfg.MODEL.LOSSES_CE_SCALE
         self.pixel_mean=cfg.INPUT.PIXEL_MEAN
         self.pixel_std=cfg.INPUT.PIXEL_STD
+        
+        self.norm = nn.ModuleList([nn.LayerNorm(embed_dim[i]) for i in range(2)])
+        self.head = nn.ModuleList([nn.Linear(embed_dim[i], self.in_planes) if self.in_planes > 0 else nn.Identity() for i in range(2)])
         if self.ID_LOSS_TYPE == 'arcface':
             print('using {} with s:{}, m: {}'.format(self.ID_LOSS_TYPE,cfg.SOLVER.COSINE_SCALE,cfg.SOLVER.COSINE_MARGIN))
             self.classifier = Arcface(self.in_planes, self.num_classes,
@@ -314,41 +334,115 @@ class build_transformer_local(nn.Module):
         self.rearrange = rearrange
 
     def forward(self, x, label=None, cam_label= None, view_label=None):  # label is unused if self.cos_layer == 'no'
-
+        # print(x.shape)NOTE
         features = self.base(x, cam_label=cam_label, view_label=view_label)
-
+        
+        # print(features.shape)#featrue[8,129,768]
         # global branch
-        b1_feat = self.b1(features) # [64, 129, 768]
-        global_feat = b1_feat[:, 0]
-
+        # b1_feat=features
+        # print([features[i].shape for i in range(2)])
+        # for blk in self.b1:
+        #     b1_feat =blk(b1_feat)
+        # b1_feat = [blk(features) for blk in self.b1] # [64, 129, 768]
+        b1_feat=self.b1(features)
+        # bh=b1_feat[0].size(0)
+        # NOTE 2023.9.1
+        b1_feat = [self.norm[i](x) for i, x in enumerate(b1_feat)]
+        global_feat = [b1[:, 0] for b1 in b1_feat]
+        global_feat=[self.head[i](x) for i ,x in enumerate(global_feat)]
+        global_feat=torch.mean(torch.stack(global_feat,dim=0),dim=0)
+        # global_feat=global_feat.view(bh,-1,self.in_planes)
+                # ce_logits = [self.head[i](x) for i, x in enumerate(xs)]
+        # ce_logits = torch.mean(torch.stack(ce_logits, dim=0), dim=0)
         # JPM branch
-        feature_length = features.size(1) - 1
-        patch_length = feature_length // self.divide_length
-        token = features[:, 0:1]
-
+        feature_length = [features[i].size(1) - 1 for i in range(2)]
+        # print(feature_length)
+        patch_length = [feature_length[i] // self.divide_length for i in range(2)]
+        # token = features[:, 0:1]
+        token=[]
+        for i in range(2):
+        # token0 = features[0][:, 0:1]
+        # token1 = features[1][:, 0:1]
+            token.append(features[i][:,0:1])
+        x=[]
         if self.rearrange:
-            x = shuffle_unit(features, self.shift_num, self.shuffle_groups)
+            for i in range(2):
+                x.append(shuffle_unit(features[i], self.shift_num, self.shuffle_groups))
+            # x0= shuffle_unit(features[0], self.shift_num, self.shuffle_groups) 
+            # x1= shuffle_unit(features[1], self.shift_num, self.shuffle_groups) 
         else:
-            x = features[:, 1:]
+            for i in range(2):
+                x.append(features[i][:,1:])
+            # x0 = features[0][:, 1:]
+            # x1 = features[1][:, 1:]
         # lf_1
-        b1_local_feat = x[:, :patch_length]
-        b1_local_feat = self.b2(torch.cat((token, b1_local_feat), dim=1))
-        local_feat_1 = b1_local_feat[:, 0]
-
+        b1_local_feat_0 = x[0][:, :patch_length[0]]
+        b1_local_feat_1 = x[1][:, :patch_length[1]]
+        # print(b1_local_feat.size())
+        # print(token0.size())
+        b1_local_feat=[torch.cat((token[0],b1_local_feat_0),dim=1),torch.cat((token[1],b1_local_feat_1),dim=1)]
+        b1_local_feat = self.b2(b1_local_feat)
+        bh1=b1_local_feat[0].size(0)
+        
+        # NOTE 注意 
+        b1_l_f= [self.norm[i](x) for i, x in enumerate(b1_local_feat)]
+        b1_l_f = [b1[:, 0] for b1 in b1_local_feat]
+        b1_l_f=[self.head[i](x) for i ,x in enumerate(b1_l_f)]
+        b1_l_f=torch.mean(torch.stack(b1_l_f,dim=0),dim=0)
+        b1_l_f=b1_l_f.view(bh1,-1,self.in_planes)
+        local_feat_1 = b1_l_f[:, 0]
+        # print(local_feat_1.size())
         # lf_2
-        b2_local_feat = x[:, patch_length:patch_length*2]
-        b2_local_feat = self.b2(torch.cat((token, b2_local_feat), dim=1))
-        local_feat_2 = b2_local_feat[:, 0]
+        # b2_local_feat = x[1][:, patch_length[1]:patch_length[1]*2]
+        # b2_local_feat = self.b2([torch.cat((token1, b2_local_feat), dim=1)])
+        # local_feat_2 = b2_local_feat[:, 0]
+        b2_local_feat_0 = x[0][:, patch_length[0]:patch_length[0]*2]
+        b2_local_feat_1 = x[1][:, patch_length[1]:patch_length[1]*2]
+        b2_local_feat=[torch.cat((token[0],b2_local_feat_0),dim=1),torch.cat((token[1],b2_local_feat_1),dim=1)]
+        b2_local_feat = self.b2(b2_local_feat)
+        bh2=b2_local_feat[0].size(0)
+        b2_l_f= [self.norm[i](x) for i, x in enumerate(b2_local_feat)]
+        b2_l_f = [b2[:, 0] for b2 in b2_local_feat]
+        b2_l_f=[self.head[i](x) for i ,x in enumerate(b2_l_f)]
+        b2_l_f=torch.mean(torch.stack(b2_l_f,dim=0),dim=0)
+        b2_l_f=b2_l_f.view(bh2,-1,self.in_planes)
+        local_feat_2 = b2_l_f[:, 0]
 
         # lf_3
-        b3_local_feat = x[:, patch_length*2:patch_length*3]
-        b3_local_feat = self.b2(torch.cat((token, b3_local_feat), dim=1))
-        local_feat_3 = b3_local_feat[:, 0]
-
+        # b3_local_feat = x[:, patch_length[0]*2:patch_length[0]*3]
+        # b3_local_feat = self.b2(torch.cat((token, b3_local_feat), dim=1))
+        # local_feat_3 = b3_local_feat[:, 0]
+        b3_local_feat_0 = x[0][:, patch_length[0]*2:patch_length[0]*3]
+        b3_local_feat_1 = x[1][:, patch_length[1]*2:patch_length[1]*3]
+        b3_local_feat=[torch.cat((token[0],b3_local_feat_0),dim=1),torch.cat((token[1],b3_local_feat_1),dim=1)]
+        b3_local_feat = self.b2(b3_local_feat)
+        bh3=b3_local_feat[0].size(0)
+        b3_l_f= [self.norm[i](x) for i, x in enumerate(b3_local_feat)]
+        b3_l_f = [b3[:, 0] for b3 in b3_local_feat]
+        b3_l_f=[self.head[i](x) for i ,x in enumerate(b3_l_f)]
+        b3_l_f=torch.mean(torch.stack(b3_l_f,dim=0),dim=0)
+        b3_l_f=b3_l_f.view(bh3,-1,self.in_planes)
+        local_feat_3 = b3_l_f[:, 0]
         # lf_4
-        b4_local_feat = x[:, patch_length*3:patch_length*4]
-        b4_local_feat = self.b2(torch.cat((token, b4_local_feat), dim=1))
-        local_feat_4 = b4_local_feat[:, 0]
+        # b4_local_feat = x[:, patch_length[1]*3:patch_length[1]*4]
+        # b4_local_feat = self.b2(torch.cat((token, b4_local_feat), dim=1))
+        # local_feat_4 = b4_local_feat[:, 0]
+        b4_local_feat_0 = x[0][:, patch_length[0]*3:patch_length[0]*4]
+        b4_local_feat_1 = x[1][:, patch_length[1]*3:patch_length[1]*4]
+        b4_local_feat=[torch.cat((token[0],b4_local_feat_0),dim=1),torch.cat((token[1],b4_local_feat_1),dim=1)]
+        b4_local_feat = self.b2(b4_local_feat)
+        bh4=b4_local_feat[0].size(0)
+        b4_l_f= [self.norm[i](x) for i, x in enumerate(b4_local_feat)]
+        b4_l_f = [b2[:, 0] for b2 in b2_local_feat]
+        b4_l_f=[self.head[i](x) for i ,x in enumerate(b4_l_f)]
+        b4_l_f=torch.mean(torch.stack(b4_l_f,dim=0),dim=0)
+        b4_l_f=b4_l_f.view(bh4,-1,self.in_planes)
+        local_feat_4 = b4_l_f[:, 0]
+        # print(global_feat.size())
+
+
+
+
 
         feat = self.bottleneck(global_feat)
 
@@ -374,10 +468,11 @@ class build_transformer_local(nn.Module):
             # cls_score_3 = cross_entropy_loss(local_feat_3_bn,label,self.eps,self.alpha)*self.scale*0.125
             # cls_score_4 = cross_entropy_loss(local_feat_4_bn,label,self.eps,self.alpha)*self.scale*0.125
             
-            loss_ada=self.losses(global_feat,local_feat_1,local_feat_2,local_feat_3,local_feat_4,label)
+            # loss_ada=self.losses(global_feat,local_feat_1,local_feat_2,local_feat_3,local_feat_4,label)
             
             return torch.cat([cls_score, cls_score_1, cls_score_2, cls_score_3,
-                        cls_score_4],dim=1), loss_ada  # global feature for triplet loss
+                        cls_score_4],dim=1), torch.cat([global_feat, local_feat_1, local_feat_2, local_feat_3,
+                            local_feat_4],dim=1)  # global feature for triplet loss
            
         else:
             if self.neck_feat == 'after':
@@ -437,14 +532,16 @@ __factory_T_type = {
     'vit_base_patch16_224_TransReID': vit_base_patch16_224_TransReID,
     'deit_base_patch16_224_TransReID': vit_base_patch16_224_TransReID,
     'vit_small_patch16_224_TransReID': vit_small_patch16_224_TransReID,
-    'deit_small_patch16_224_TransReID': deit_small_patch16_224_TransReID
+    'deit_small_patch16_224_TransReID': deit_small_patch16_224_TransReID,
+    "crossvit_base_224_TransReID":crossvit_base_224_TransReID
 }
 
 def make_model(cfg, num_class, camera_num, view_num):
     if cfg.MODEL.NAME == 'transformer':
         if cfg.MODEL.JPM:
             model = build_transformer_local(num_class, camera_num, view_num, cfg, __factory_T_type, rearrange=cfg.MODEL.RE_ARRANGE)
-            print('===========building transformer with JPM module ===========')
+            print('===========building transformer with JPM module===========')
+            # print(model)
         else:
             model = build_transformer(num_class, camera_num, view_num, cfg, __factory_T_type)
             print('===========building transformer===========')

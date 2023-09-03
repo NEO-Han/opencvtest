@@ -23,7 +23,9 @@ Hacked together by / Copyright 2020 Ross Wightman
 import math
 from functools import partial
 from itertools import repeat
-
+import einops
+# import jax
+# import jax.numpy as jnp
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -126,13 +128,16 @@ class Mlp(nn.Module):
         self.act = act_layer()
         self.fc2 = nn.Linear(hidden_features, out_features)
         self.drop = nn.Dropout(drop)
+        
 
     def forward(self, x):
         x = self.fc1(x)
         x = self.act(x)
-        x = self.drop(x)
+        # print(x.shape,'fc1')
+        x = self.drop(x)#[8,129 OR 33,3072]
         x = self.fc2(x)
         x = self.drop(x)
+        # print(x.shape,'fc2')#[8,129 OR 33,768]
         return x
 
 
@@ -177,11 +182,14 @@ class Block(nn.Module):
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
-
+        # print('dim:>>>>>>',dim)#768
+        # print('mlp_hidden:>>>>',mlp_hidden_dim)#3072
     def forward(self, x):
         x = x + self.drop_path(self.attn(self.norm1(x)))
         x = x + self.drop_path(self.mlp(self.norm2(x)))
+        # print(x.shape)#[8,129,768]
         return x
+
 
 
 class PatchEmbed(nn.Module):
@@ -263,7 +271,7 @@ class PatchEmbed_overlap(nn.Module):
         self.img_size = img_size
         self.patch_size = patch_size
         self.num_patches = num_patches
-
+        
         self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=stride_size)
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -277,16 +285,72 @@ class PatchEmbed_overlap(nn.Module):
                 m.bias.data.zero_()
 
     def forward(self, x):
-        B, C, H, W = x.shape
-
+        B, C, H, W = x.shape#[8,3,256,128]
+        print(B,C,H,W)
+        print(self.patch_size)
         # FIXME look at relaxing size constraints
         assert H == self.img_size[0] and W == self.img_size[1], \
             f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
         x = self.proj(x)
-
-        x = x.flatten(2).transpose(1, 2) # [64, 8, 768]
+        print(x.shape)#[8,768,16,8]
+        x = x.flatten(2).transpose(1, 2) # [8,128,768]
+        print(x.shape)
         return x
 
+
+class PatchEmbed_MAXIM(nn.Module):
+    """ Image to Patch Embedding with overlapping patches
+    """
+    def __init__(self, img_size=224, patch_size=16, stride_size=20, in_chans=3, embed_dim=768):
+        super().__init__()
+        img_size = to_2tuple(img_size)#(256,256)
+        patch_size = to_2tuple(patch_size)#(16,16)
+        stride_size_tuple = to_2tuple(stride_size)
+        self.num_x = (img_size[1] - patch_size[1]) // stride_size_tuple[1] + 1
+        self.num_y = (img_size[0] - patch_size[0]) // stride_size_tuple[0] + 1
+        print('using stride: {}, and patch number is num_y{} * num_x{}'.format(stride_size, self.num_y, self.num_x))
+        num_patches = self.num_x * self.num_y
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.num_patches = num_patches
+        
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=stride_size)
+        for m in self.modules():
+            # print(m)
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n))
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+            elif isinstance(m, nn.InstanceNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+
+    def forward(self, x):
+        B, C, H, W = x.shape#[8,3,256,128]
+        # print(B,C,H,W)
+        g_x=x.permute(0,3,2,1).contiguous()
+        l_x=x.permute(0,2,3,1).contiguous()
+        g_x=block_images_einops(g_x,self.patch_size)
+        l_x=block_images_einops(l_x,self.patch_size)
+        fix=g_x+l_x
+        fix=fix.permute(0,3,2,1)
+        # print(fix.shape)
+        # FIXME look at relaxing size constraints
+        # assert H == self.img_size[0] and W == self.img_size[1], \
+        #     f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+        x = self.proj(fix)#[8,768,16,8]
+        # print(x.shape)
+        # print(g_x.shape)
+        # print(l_x.shape)
+
+        # print(g_x==l_x)
+        x = x.flatten(2).transpose(1, 2) # [64, 8, 768]
+        # print(x.shape)
+        return x
+    
+    
 
 class TransReID(nn.Module):
     """ Transformer-based Object Re-Identification
@@ -299,12 +363,26 @@ class TransReID(nn.Module):
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         self.local_feature = local_feature
         if hybrid_backbone is not None:
-            self.patch_embed = HybridEmbed(
-                hybrid_backbone, img_size=img_size, in_chans=in_chans, embed_dim=embed_dim)
-        else:
-            self.patch_embed = PatchEmbed_overlap(
+            if hybrid_backbone =='t2t':
+                # print(img_size)
+                # img_size_t=to_2tuple(img_size)
+                # print(img_size_t)
+                # patch_size_t=to_2tuple(patch_size)
+                # print(patch_size)
+                # num_patches = _compute_num_patches(to_2tuple(img_size), to_2tuple(patch_size))
+                from .t2t import T2T
+                tokens_type = 'transformer' 
+                
+                self.patch_embed=T2T(img_size=img_size, tokens_type=tokens_type, patch_size=patch_size, embed_dim=embed_dim)
+                # num_patches = self.patch_embed.num_patches
+            else:
+                self.patch_embed = PatchEmbed_overlap(
                 img_size=img_size, patch_size=patch_size, stride_size=stride_size, in_chans=in_chans,
                 embed_dim=embed_dim)
+                # num_patches = self.patch_embed.num_patches
+        else:
+                self.patch_embed = HybridEmbed(
+                hybrid_backbone, img_size=img_size, in_chans=in_chans, embed_dim=embed_dim)
 
         num_patches = self.patch_embed.num_patches
 
@@ -344,7 +422,9 @@ class TransReID(nn.Module):
             for i in range(depth)])
 
         self.norm = norm_layer(embed_dim)
-
+        # print(self.blocks)
+        # print('=============fen ge===============')
+        # print(self.blocks[:-1])
         # Classifier head
         self.fc = nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
         trunc_normal_(self.cls_token, std=.02)
@@ -389,45 +469,58 @@ class TransReID(nn.Module):
             x = x + self.pos_embed
 
         x = self.pos_drop(x)
-
+        # print(x.shape)
+        # print('@@@@@@@@')
         if self.local_feature:
             for blk in self.blocks[:-1]:
                 x = blk(x)
+                # print(x.shape)
+                
             return x
 
         else:
             for blk in self.blocks:
                 x = blk(x)
-
+                # print(x.shape)
             x = self.norm(x)
-
+            # print(x.shape)
             return x[:, 0]
 
     def forward(self, x, cam_label=None, view_label=None):
         x = self.forward_features(x, cam_label, view_label)
+        # print(x.shape)
         return x
 
     def load_param(self, model_path):
         param_dict = torch.load(model_path, map_location='cpu')
+        print(model_path)
         if 'model' in param_dict:
             param_dict = param_dict['model']
         if 'state_dict' in param_dict:
             param_dict = param_dict['state_dict']
+        
         for k, v in param_dict.items():
             if 'head' in k or 'dist' in k:
                 continue
+            # print('k>>',k,"v>>",v.shape)
             if 'patch_embed.proj.weight' in k and len(v.shape) < 4:
                 # For old models that I trained prior to conv based patchification
                 O, I, H, W = self.patch_embed.proj.weight.shape
                 v = v.reshape(O, -1, H, W)
+                print('resize k: ',k,'resize v:',v.shape)
+                
             elif k == 'pos_embed' and v.shape != self.pos_embed.shape:
                 # To resize pos embedding when using model at different size from pretrained weights
                 if 'distilled' in model_path:
                     print('distill need to choose right cls token in the pth')
                     v = torch.cat([v[:, 0:1], v[:, 2:]], dim=1)
                 v = resize_pos_embed(v, self.pos_embed, self.patch_embed.num_y, self.patch_embed.num_x)
+                print('resize k: ',k,'resize v:',v.shape)
+            
             try:
+                
                 self.state_dict()[k].copy_(v)
+                
             except:
                 print('===========================ERROR=========================')
                 print('shape do not match in k :{}: param_dict{} vs self.state_dict(){}'.format(k, v.shape, self.state_dict()[k].shape))
@@ -454,7 +547,7 @@ def vit_base_patch16_224_TransReID(img_size=(256, 128), stride_size=16, drop_rat
     model = TransReID(
         img_size=img_size, patch_size=16, stride_size=stride_size, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,\
         camera=camera, view=view, drop_path_rate=drop_path_rate, drop_rate=drop_rate, attn_drop_rate=attn_drop_rate,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6),  sie_xishu=sie_xishu, local_feature=local_feature, **kwargs)
+        norm_layer=partial(nn.LayerNorm, eps=1e-6),  sie_xishu=sie_xishu, local_feature=local_feature, hybrid_backbone='t2',**kwargs)
 
     return model
 
@@ -530,3 +623,31 @@ def trunc_normal_(tensor, mean=0., std=1., a=-2., b=2.):
         >>> nn.init.trunc_normal_(w)
     """
     return _no_grad_trunc_normal_(tensor, mean, std, a, b)
+
+def block_images_einops(x, patch_size):
+    """Image to patches."""
+    batch, height, width, channels = x.shape
+    grid_height = height // patch_size[0]
+    grid_width = width // patch_size[1]
+    x = einops.rearrange(
+            x, "n (gh fh) (gw fw) c -> n (gh gw) (fh fw) c",
+            gh=grid_height, gw=grid_width, fh=patch_size[0], fw=patch_size[1])
+    return x
+
+
+def unblock_images_einops(x, grid_size, patch_size):
+    """patches to images."""
+    x = einops.rearrange(x, "n (gh gw) (fh fw) c -> n (gh fh) (gw fw) c",
+            gh=grid_size[0], gw=grid_size[1], fh=patch_size[0], fw=patch_size[1])
+    return x
+
+
+
+if __name__=='__main__':
+#    model=vit_base_patch16_224_TransReID()
+#    print(model)
+    a=torch.randn([2,4,6])
+    fc=nn.LayerNorm(6)
+    a=fc(a)
+    print(a[:,0])
+    

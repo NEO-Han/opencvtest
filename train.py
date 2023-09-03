@@ -26,7 +26,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description="ReID Baseline Training")
     parser.add_argument(
-        "--config_file", default="G:/shuoshi/REID/MyReID/configs/Market/vit_base.yml", help="path to config file", type=str
+        "--config_file", default="G:/shuoshi/REID/MyReID/configs/Market/crossvit_jpm.yml", help="path to config file", type=str
     )
 
     parser.add_argument("opts", help="Modify config options using the command-line", default=None,
@@ -64,7 +64,7 @@ if __name__ == '__main__':
 
     os.environ['CUDA_VISIBLE_DEVICES'] = cfg.MODEL.DEVICE_ID
     train_loader, train_loader_normal, val_loader, num_query, num_classes, camera_num, view_num = make_dataloader(cfg)
-
+    # print(num_classes)
     model = make_model(cfg, num_class=num_classes, camera_num=camera_num, view_num = view_num)
     # print(model)
     loss_func, center_criterion = make_loss(cfg, num_classes=num_classes)
